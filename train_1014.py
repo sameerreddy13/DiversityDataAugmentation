@@ -14,6 +14,7 @@ if torch.cuda.is_available():
   dev = "cuda:0"
 else:
   dev = "cpu"
+dev = "cpu"
 
 print(f'Using device {dev}')
 # MODEL_KEY = 'sshleifer/distilbart-cnn-12-3'
@@ -53,20 +54,12 @@ def tokenize_sentences(sentences):
 
   return tokenized, tokenizer
 
-def reward_fuzz_match(s_in, s_out):
+def reward_match(s_in, s_out):
   '''
   Reward based on fuzzy match ratio. Encourage similarity (toy example)
   '''
   r = fuzz.ratio(s_in, s_out) / 100
   return r
-
-def reward_matching_tokens(s_in, s_out):
-  '''
-  Reward based on number of matching words
-  '''
-  t1 = set(s_in.split())
-  t2= set(s_out.split())
-  return len(t1 & t2) / len(t1 | t2)
 
 def get_inputs(model, input_ids):
   decoder_start_token_id = model.config.decoder_start_token_id
@@ -79,7 +72,7 @@ def get_inputs(model, input_ids):
   if model.config.is_encoder_decoder:
       model_kwargs = gm._prepare_encoder_decoder_kwargs_for_generation(model, input_ids, model_kwargs)
 
-      input_ids = gm.i(
+      input_ids = gm._prepare_decoder_input_ids_for_generation(
           model, input_ids, decoder_start_token_id=decoder_start_token_id, bos_token_id=bos_token_id)
 
   model_kwargs["use_cache"] = None
@@ -117,9 +110,7 @@ def compute_sequence_score(sequence_ids, sequence_scores):
   # We should have a score for each token in the sequence
   return torch.tensor(policy_scores, requires_grad=True, device=dev).sum()
   
-def decode_sentences(sequences, tokenizer):
-  gen_sentences = [tokenizer.decode(s, skip_special_tokens=True).encode('utf-8') for s in outputs['sequences']]
-  return gen_sentences
+
 
 
 if __name__ == '__main__':
@@ -143,6 +134,7 @@ if __name__ == '__main__':
     batches = [(sst_dataset['idx'], sst_dataset['sentence'], encodings)]
   optimizer = optim.Adam(model.parameters(), lr=LR, amsgrad=USE_AMS)
   for epoch in range(EPOCHS):
+    print(epoch)
     for b in batches:
       optimizer.zero_grad()
       indices, sentences, e = b
@@ -162,23 +154,41 @@ if __name__ == '__main__':
 
       # pdb.set_trace()
       encoder_output = model.model.encoder(input_ids=e.input_ids, attention_mask=e.attention_mask)
-      decoder_input_ids = model._prepare_decoder_input_ids_for_generation(e.input_ids)
-      outputs = model.sample(decoder_input_ids, encoder_outputs=encoder_output, stopping_criteria=MaxLengthCriteria(20), output_scores=True, return_dict_in_generate=True)
+      decoder_input_ids = model.prepare_decoder_input_ids_from_labels(e.input_ids)
+      outputs = model.sample(decoder_input_ids, encoder_outputs=encoder_output, stopping_criteria=MaxLengthCriteria(30), output_scores=True, return_dict_in_generate=True)
       # Decode sentences and compute losses
-      gen_sentences = decode_sentences(outputs['sequences'], tokenizer)
-      # Get generated sequences of ids and reshape for selecting log probs corresponding to actions
+      gen_sentences = [tokenizer.decode(s, skip_special_tokens=True).encode('utf-8') for s in outputs['sequences']]
+      # get generated sequences of ids and reshape for selecting log probs corresponding to actions
       logits = torch.stack(outputs['scores'], dim=0)
       log_probs = torch.log_softmax(logits.squeeze(), dim=1)
-      seq = outputs['sequences'].flatten()[1:].unsqueeze(1)
-      selected_probs=torch.gather(log_probs, 1, seq)
-      # Compute reward
+
+      # seq = outputs['sequences'][:,1:]
+      # seq = seq.reshape((seq.shape[1], -1))
+      # selected_probs=torch.gather(log_probs, 1, seq)
       rewards = []
       for s_in, s_out in zip(sentences, gen_sentences):
-        rewards.append(reward_matching_tokens(s_in, s_out.decode('utf-8')))
+        rewards.append(reward_match(s_in, s_out.decode('utf-8')))
       rewards = torch.tensor(rewards, requires_grad=False, device=dev)
       rewards = rewards
-      # Compute loss
-      loss = (rewards * -selected_probs).mean()
+      # loss = (rewards * -selected_probs).mean()
+      # labels = e.input_ids[:,1:]
+      # # PADDING
+      padding = torch.tensor([tokenizer.pad_token_id]*(len(logits)-e.input_ids.shape[1])).unsqueeze(0).to(dev)
+      labels = torch.cat((e.input_ids, padding), 1)
+      # # PADDING
+      padding2 = torch.tensor([tokenizer.pad_token_id]*(labels.shape[1]-len(logits))).unsqueeze(0).to(dev)
+      # pdb.set_trace()
+      if labels is not None:
+        loss_fct = torch.nn.CrossEntropyLoss()
+        z1, z2 = logits.squeeze(1), labels.flatten().unsqueeze(1)
+        yhat = torch.gather(z1, 1, z2)
+        try:
+          masked_lm_loss = loss_fct(yhat, labels)
+        except:
+          pdb.set_trace()
+        loss = masked_lm_loss
+
+      
       ### SUPERVISED COPY ####
       # if epoch % interval == 0:
       #   gen_sentences = model.generate(input_ids=e.input_ids, attention_mask=e.attention_mask)
@@ -191,7 +201,7 @@ if __name__ == '__main__':
       if epoch % interval == 0:
         print(f"--------------------------EPOCH {epoch}--------------------------")
         print("REWARDS:", rewards)
-        print("SELECTED_PROBS:",selected_probs)
+        # print("SELECTED_PROBS:",selected_probs)
         print("LOSS:", loss)
         print("GENERATED:", gen_sentences)
         print("TARGETS:", sentences)
