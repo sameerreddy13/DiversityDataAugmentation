@@ -5,7 +5,7 @@ import pdb
 from typing import List, Dict, Union
 import os
 import numpy as np
-from utils import load_bart_model, load_bart_tokenizer, get_adamw, dev
+from utils import load_bart_model, load_bart_tokenizer, get_adamw, DEV
 from data import SSTLoader, TokenizerWrapper
 from bart_rl import BartReinforce
 logging.set_verbosity_error()
@@ -26,7 +26,7 @@ def compute_rewards(inputs: List[str], ouputs: List[str]) -> torch.FloatTensor:
     :torch.FloatTensor of shape (batch_size, 1): Batch size length tensor of rewards
   '''
   rewards = torch.rand(len(inputs))
-  R = torch.as_tensor(rewards).unsqueeze(-1).to(dev)
+  R = torch.as_tensor(rewards).unsqueeze(-1).to(DEV)
   Rb = R.mean()
   return R - Rb
 
@@ -59,7 +59,6 @@ def main():
       tepoch.set_description(f"Epoch {epoch}")
       bart.train()
       for batch in tepoch:
-          bart.zero_grad()
           optimizer.zero_grad()
           # Generate episodes from batch of inputs
           max_in_len = batch[0].shape[1]

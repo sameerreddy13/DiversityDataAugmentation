@@ -1,13 +1,13 @@
 from transformers import MaxLengthCriteria, TemperatureLogitsWarper
 import torch
-from utils import dev
+from utils import DEV
 class BartReinforce():
   '''
   BART for RL - specifically policy gradient with REINFORCE
   '''
   def __init__(self, model):
     self.model = model
-    self.model = self.model.to(dev)
+    self.model = self.model.to(DEV)
     # Contains actions from latest batch. List of token_id LongTensors
     self.actions = list()
     # Contains log_probs of actions from latest batch. FloatTensor(batch_size, num_steps) of log probs
@@ -62,7 +62,7 @@ class BartReinforce():
     '''
     Sample next tokens for batch and store actions and log probabilities
     '''
-    next_tokens = self.sample_policy(probs).to(dev)
+    next_tokens = self.sample_policy(probs).to(DEV)
     next_tokens = next_tokens * unfinished_sequences + self.pad_token_id * (1 - unfinished_sequences)
     selected_log_probs = torch.log(probs.gather(1, next_tokens.unsqueeze(-1)))
     self.actions.append(next_tokens.cpu())
@@ -84,7 +84,7 @@ class BartReinforce():
     if self.is_encoder_decoder:
       encoder_input_ids, attention_mask = input_ids, model_kwargs['attention_mask']
       # Get encoder outputs of type BaseModelOutput
-      self.encoder.to(dev)
+      self.encoder.to(DEV)
       model_kwargs['encoder_outputs'] = self.encoder(input_ids=encoder_input_ids, attention_mask=attention_mask)
       model_kwargs = self.model._prepare_encoder_decoder_kwargs_for_generation(input_ids, model_kwargs)
       # Set input_ids as decoder_input_ids
@@ -121,7 +121,7 @@ class BartReinforce():
     self.epsilon = epsilon
     model_kwargs = dict()
     input_ids, attention_mask, labels = batch
-    input_ids, attention_mask, labels = input_ids.to(dev), attention_mask.to(dev), labels.to(dev)
+    input_ids, attention_mask, labels = input_ids.to(DEV), attention_mask.to(DEV), labels.to(DEV)
     model_kwargs['attention_mask'] = attention_mask    
     input_ids, model_kwargs = self.prepare_inputs_for_decoder(input_ids, model_kwargs)
     max_length = max_length if max_length is not None else self.model.config.max_length      

@@ -6,7 +6,7 @@ class TokenizerWrapper():
   '''
   Wrapper for tokenizer
   '''
-  def __init__(self, tokenizer, encode_config):
+  def __init__(self, tokenizer, encode_config={}):
     self.t = tokenizer
     self.encode_config = encode_config
 
@@ -37,12 +37,31 @@ class SSTLoader():
     lim: Use lim of -1 to use all samples. Otherwise uses up to lim samples.  
     batch_size: Batch size for loaders
     tokenizer: Tokenizer
+
+  Returns: 
+    batches from TensorDataset with elements: input_ids, attention_mask, labels
+
+  Dataset reference:
+    DatasetDict({
+        train: Dataset({
+            features: ['sentence', 'label', 'idx'],
+            num_rows: 67349
+        })
+        validation: Dataset({
+            features: ['sentence', 'label', 'idx'],
+            num_rows: 872
+        })
+        test: Dataset({
+            features: ['sentence', 'label', 'idx'],
+            num_rows: 1821
+        })
+    })
   '''
   def __init__(self, tokenizer: TokenizerWrapper, batch_size: int, lim: int = -1):
     self.lim = lim
     self.tokenizer = tokenizer
     self.batch_size = batch_size
-    self.datasets = self.__load_sst2()
+    self.__load_sst2()
 
   def __load_sst2(self):
     '''
@@ -51,33 +70,49 @@ class SSTLoader():
     # Training data from glue (not tokenized) containing keys ('sentence', 'idx', 'label')  
     raw_datasets = datasets.load_dataset("glue", "sst2")
     train_dataset = raw_datasets['train']
-    test_dataset = raw_datasets['validation']
+    val_dataset = raw_datasets['validation']
+    test_dataset = raw_datasets['test']
     if self.lim > 0:
         train_dataset = train_dataset.select(range(self.lim))
+        val_dataset = val_dataset.select(range(self.lim))
         test_dataset = test_dataset.select(range(self.lim))
-    self.train_dataset = train_dataset
-    self.test_dataset = test_dataset
-    return train_dataset, test_dataset
 
-  def __create_torch_dataloader(self, sents, labels) -> torch_data.DataLoader:
+    self.train_dataset = train_dataset
+    self.val_dataset = val_dataset
+    self.test_dataset = test_dataset
+
+  def __create_torch_dataloader(self, sents, labels, shuffle) -> torch_data.DataLoader:
     encodings = self.tokenizer.encode(sents) 
     torch_ds = torch_data.TensorDataset(
             encodings['input_ids'], 
             encodings['attention_mask'], 
             labels
         )
-    return torch_data.DataLoader(torch_ds, batch_size=self.batch_size)
+    return torch_data.DataLoader(torch_ds, batch_size=self.batch_size, shuffle=shuffle)
 
-  def get_test_loader(self):
-    '''
-    Encodes dataset and return test dataloader (data batches)
-    '''
-    d = self.datasets[1]
-    return self.__create_torch_dataloader(d['sentence'], torch.as_tensor(d['label']))
+  def __sst_to_loader(self, d, s):
+    return self.__create_torch_dataloader(d['sentence'], torch.as_tensor(d['label']), s)
 
-  def get_train_loader(self):
+  # @staticmethod
+  # def inputs_to_tensor_ds()
+  #   '''
+  #   Convert encodings and labels from tokenizer output into tensor dataset for 
+    
+  def get_train_loader(self, shuffle=True):
     '''
     Encodes dataset and return train dataloader (data batches)
     '''
-    d = self.datasets[0]
-    return self.__create_torch_dataloader(d['sentence'], torch.as_tensor(d['label']))
+    return self.__sst_to_loader(self.train_dataset, shuffle)
+
+  def get_val_loader(self, shuffle=True):
+    '''
+    Encodes dataset and return val dataloader (data batches)
+    '''
+    return self.__sst_to_loader(self.val_dataset, shuffle)
+
+  def get_test_loader(self, shuffle=True):
+    '''
+    Encodes dataset and return test dataloader (data batches)
+    '''
+    return self.__sst_to_loader(self.test_dataset, shuffle)
+
