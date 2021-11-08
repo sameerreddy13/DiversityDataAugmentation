@@ -16,7 +16,7 @@ class DistilBertSST(nn.Module):
 	# model_key = 'bhadresh-savani/distilbert-base-uncased-sentiment-sst2'
 	def __init__(self):
 		super().__init__()
-		self.model = DistilBertForSequenceClassification.from_pretrained(self.model_key)
+		self.model = DistilBertForSequenceClassification.from_pretrained(self.model_key).to(DEV)
 		self.tokenizer = TokenizerWrapper(
 			DistilBertTokenizerFast.from_pretrained(self.model_key),
 			{
@@ -30,7 +30,7 @@ class DistilBertSST(nn.Module):
 		return self.model(*args, **kwargs)
 
 	@torch.no_grad()
-	def predict_on_text(self, text: Union[str, List[str]] ):
+	def predict_on_text(self, text: Union[str, List[str]]) -> np.ndarray:
 		'''
 		Get predicted labels from applying model to text or texts.
 		Let N := number of input texts. 

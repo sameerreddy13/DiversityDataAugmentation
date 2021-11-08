@@ -25,7 +25,7 @@ else:
 print(f'Using device {DEV}')
 # MODEL_KEY = 'sshleifer/distilbart-cnn-6-6'
 MODEL_KEY = 'facebook/bart-base'
-
+LOG_EPS = 0 # 1e-8
 def load_bart_model(layers=None):
   '''
   Load pretrained BartForConditionalGeneration 
