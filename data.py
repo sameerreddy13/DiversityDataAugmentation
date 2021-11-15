@@ -3,14 +3,16 @@ import torch.utils.data as torch_data
 from typing import List, Dict, Union
 import datasets
 
-# def tokenize_string(s):
-
-
 class TokenizerWrapper():
     '''
     Wrapper for tokenizer
     '''
-    def __init__(self, tokenizer, encode_config={}):
+    default_encode_config = dict(
+        add_special_tokens = True, 
+        padding=True, truncation=True, 
+        return_tensors='pt'
+    )
+    def __init__(self, tokenizer, encode_config=default_encode_config):
         self.t = tokenizer
         self.encode_config = encode_config
 
@@ -31,59 +33,67 @@ class TokenizerWrapper():
         '''
         Return decoded sentences from token id sequences
         '''
-        return [self.t.decode(s, skip_special_tokens=skip_special_tokens).encode('utf-8').strip() for s in encodings]
+        def decode_id_seq(s):
+            decoded = self.t.decode(s, skip_special_tokens=skip_special_tokens)
+            try:
+                return bytes(decoded, 'utf8').decode('latin1', 'ignore')
+            except UnicodeEncodeError as e:
+                import pdb; pdb.set_trace()
+                _ = 1
+        return [decode_id_seq(e) for e in encodings]
 
 class SSTLoader():
     '''
     Data loading for sst data. Does encoding etc 
 
     Params:
-    lim: Use lim of -1 to use all samples. Otherwise uses up to lim samples.  
+    lim:        Use lim of -1 to use all samples. Otherwise uses up to lim samples.  
     batch_size: Batch size for loaders
-    tokenizer: Tokenizer
+    tokenizer:  Tokenizer
 
     Returns: 
     batches from TensorDataset with elements: input_ids, attention_mask, labels
 
     Dataset reference:
-    DatasetDict({
-        train: Dataset({
-            features: ['sentence', 'label', 'idx'],
-            num_rows: 67349
+        DatasetDict({
+            train: Dataset({
+                features: ['sentence', 'label', 'idx'],
+                num_rows: 67349
+            })
+            validation: Dataset({
+                features: ['sentence', 'label', 'idx'],
+                num_rows: 872
+            })
+            test: Dataset({
+                features: ['sentence', 'label', 'idx'],
+                num_rows: 1821
+            })
         })
-        validation: Dataset({
-            features: ['sentence', 'label', 'idx'],
-            num_rows: 872
-        })
-        test: Dataset({
-            features: ['sentence', 'label', 'idx'],
-            num_rows: 1821
-        })
-    })
+        Features:
+        {
+            'sentence': Value(dtype='string', id=None), 
+            'label': ClassLabel(num_classes=2, names=['negative', 'positive'], 
+            'idx': Value(dtype='int32', id=None)
+        }
     '''
-    def __init__(self, tokenizer: TokenizerWrapper, batch_size: int, lim: int = -1):
+    def __init__(self, tokenizer: TokenizerWrapper = None, batch_size: int = 8, lim: int = -1):
         self.lim = lim
         self.tokenizer = tokenizer
         self.batch_size = batch_size
-        self.__load_sst2()
+        self.__load_sst_binary()
 
-    def __load_sst2(self):
+
+
+    def __load_sst_binary(self):
         '''
-        Return sst2 train and test data
+        Set sst train, val and test data
         '''
         # Training data from glue (not tokenized) containing keys ('sentence', 'idx', 'label')  
-        raw_datasets = datasets.load_dataset("glue", "sst2")
-        train_dataset = raw_datasets['train']
-        val_dataset = raw_datasets['validation']
-        test_dataset = raw_datasets['test']
-        if self.lim > 0:
-            train_dataset = train_dataset.select(range(self.lim))
-            val_dataset = val_dataset.select(range(self.lim))
-            test_dataset = test_dataset.select(range(self.lim))
-
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
-        self.test_dataset = test_dataset
+        raw_dss = datasets.load_dataset("sst")
+        dss = [raw_dss['train'], raw_dss['validation'], raw_dss['test']]
+        for i, ds in enumerate(dss):
+            dss[i] = self.preprocess_dataset(ds)
+        self.train_dataset, self.val_dataset, self.test_dataset  = dss
 
     def __create_torch_dataloader(self, sents, labels, shuffle) -> torch_data.DataLoader:
         encodings = self.tokenizer.encode(sents) 
@@ -95,8 +105,32 @@ class SSTLoader():
         return torch_data.DataLoader(torch_ds, batch_size=self.batch_size, shuffle=shuffle)
 
     def __sst_to_loader(self, d, s):
-        return self.__create_torch_dataloader(d['sentence'], torch.as_tensor(d['label']), s)
-    
+        return self.__create_torch_dataloader(d['sentence'], torch.as_tensor(d['label'], dtype=torch.long), s)
+
+    @staticmethod    
+    def __sentiment_to_binary(example):
+        example['label'] = round(example['label'])
+        return example
+
+    def __preprocess_example_sents(self, example):
+        example['sentence'] = self.preprocess_sentence(example['sentence'])
+        example['sentence'] = example['sentence'] + " <s/> " + str(int(example['label']))
+        return example
+
+    @staticmethod 
+    def preprocess_sentence(s: str):
+        # remove_punc = "()-[]{};:\",<>/@#$%^&*_~`"
+        # s = s.lower().strip()
+        # s = ''.join([c for c in s if c not in remove_punc])
+        return s
+
+    def preprocess_dataset(self, ds: datasets.Dataset) -> datasets.Dataset:
+        if self.lim > 0:
+            ds = ds.select(range(self.lim))
+        ds = ds.map(self.__sentiment_to_binary)
+        ds = ds.map(self.__preprocess_example_sents)
+        return ds
+
     def get_train_loader(self, shuffle=True):
         '''
         Encodes dataset and return train dataloader (data batches)
@@ -114,4 +148,11 @@ class SSTLoader():
         Encodes dataset and return test dataloader (data batches)
         '''
         return self.__sst_to_loader(self.test_dataset, shuffle)
+
+if __name__ == '__main__':
+    from bart_rl import load_bart_tokenizer
+    sst2 = SSTLoader(TokenizerWrapper(load_bart_tokenizer()), lim=100)
+    # train_loader = sst2.get_train_loader()
+
+
 

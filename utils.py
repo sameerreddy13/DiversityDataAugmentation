@@ -22,32 +22,15 @@ if torch.cuda.is_available():
   DEV = "cuda"
 else:
   DEV = "cpu"
-print(f'Using device {DEV}')
-# MODEL_KEY = 'sshleifer/distilbart-cnn-6-6'
-MODEL_KEY = 'facebook/bart-base'
 LOG_EPS = 0 # 1e-8
-def load_bart_model(layers=None):
-  '''
-  Load pretrained BartForConditionalGeneration 
-  '''
-  config = dict()
-  if layers:
-    assert type(layers) == int
-    config = dict(encoder_layers=layers, decoder_layers=layers)
-  model = BartForConditionalGeneration.from_pretrained(MODEL_KEY, **config)
-  return model
+MODEL_KEY = 'sshleifer/distilbart-cnn-6-6'
+# MODEL_KEY = 'facebook/bart-base'
 
-def load_bart_tokenizer():
-  '''
-  Load pretrained bart tokenizer 
-  '''
-  return BartTokenizerFast.from_pretrained(MODEL_KEY)
-
-def get_adamw(model, lr=1e-5, eps=1e-8):
+def get_adamw(model, lr=1e-5, eps=1e-8, wd=0.):
   '''
   Get adamw optimizer
   '''
-  return AdamW(model.parameters(), lr=lr, eps=eps)
+  return AdamW(model.parameters(), lr=lr, eps=eps, weight_decay=wd)
 
 def convert_to_numpy(arr: Union[np.ndarray, torch.Tensor, list]) -> np.ndarray:
   '''

@@ -2,17 +2,41 @@ from transformers import (
     MaxLengthCriteria, 
     TemperatureLogitsWarper, 
     TopKLogitsWarper,
+    MinLengthLogitsProcessor,
     LogitsProcessorList
 )
+from transformers import (
+  BartTokenizerFast, BartForConditionalGeneration
+)
 import torch
-from utils import DEV, LOG_EPS
+from utils import DEV, LOG_EPS, MODEL_KEY
+
+
+def load_bart_model(layers=None):
+  '''
+  Load pretrained BartForConditionalGeneration 
+  '''
+  config = dict()
+  if layers:
+    assert type(layers) == int
+    config = dict(encoder_layers=layers, decoder_layers=layers)
+  model = BartForConditionalGeneration.from_pretrained(MODEL_KEY, **config)
+  return model
+
+def load_bart_tokenizer():
+  '''
+  Load pretrained bart tokenizer 
+  '''
+  return BartTokenizerFast.from_pretrained(MODEL_KEY)
+
 class BartReinforce():
     '''
     BART for RL - specifically policy gradient with REINFORCE
     '''
-    def __init__(self, model):
+    def __init__(self, model, device):
         self.model = model
-        self.model = self.model.to(DEV)
+        self.model = self.model.to(device)
+        self.device = device
         # Contains actions from latest batch. List of token_id LongTensors
         self.actions = list()
         # Contains log_probs of actions from latest batch. FloatTensor(batch_size, num_steps) of log probs
@@ -53,11 +77,14 @@ class BartReinforce():
         Epsilon-greedy sampling from softmax distribution
 
         Args:
-          probs :torch.FloatTensor of shape (batch_size, vocab_size): Softmax probs for token
+            probs :torch.FloatTensor of shape (batch_size, vocab_size): Softmax probs for token
         '''
         # epsilon-greedy (note this goes across batch), use uniform probs
         if torch.rand(1).item() < self.epsilon:
-            sample_probs = torch.ones(probs.shape)/probs.shape[1]
+            # filter out 0 probability tokens
+            num_nonzero = (probs != 0).sum().item()
+            sample_probs = torch.ones(probs.shape)/num_nonzero
+            sample_probs[probs == 0] = 0.
         # use policy probs
         else:
             sample_probs = probs
@@ -67,12 +94,11 @@ class BartReinforce():
         '''
         Sample next tokens for batch and store actions and log probabilities
         '''
-        next_tokens = self.sample_policy(probs).to(DEV)
+        next_tokens = self.sample_policy(probs).to(self.device)
         next_tokens = next_tokens * unfinished_sequences + self.pad_token_id * (1 - unfinished_sequences)
         probs = probs + LOG_EPS
         selected_log_probs = torch.log(probs.gather(1, next_tokens.unsqueeze(-1)))
         self.actions.append(next_tokens.cpu())
-        # import pdb; pdb.set_trace()
         if self.log_probs is None:
             self.log_probs = selected_log_probs
         else:
@@ -84,14 +110,14 @@ class BartReinforce():
         Run encoder and set up decoder input ids
 
         Returns:
-          :torch.LongTensor of shape (batch_size, vocab_size): Decoder input ids
-          :dict: Updated model_kwargs with encoder_outputs
+            :torch.LongTensor of shape (batch_size, vocab_size): Decoder input ids
+            :dict: Updated model_kwargs with encoder_outputs
         '''
         # Should be True for BART models. Run encoder and set up decoder inputs
         if self.is_encoder_decoder:
             encoder_input_ids, attention_mask = input_ids, model_kwargs['attention_mask']
             # Get encoder outputs of type BaseModelOutput
-            self.encoder.to(DEV)
+            self.encoder.to(self.device)
             model_kwargs['encoder_outputs'] = self.encoder(input_ids=encoder_input_ids, attention_mask=attention_mask)
             model_kwargs = self.model._prepare_encoder_decoder_kwargs_for_generation(input_ids, model_kwargs)
             # Set input_ids as decoder_input_ids
@@ -106,41 +132,36 @@ class BartReinforce():
         return input_ids, model_kwargs
 
 
-    def generate_episodes(self, batch, max_length=None, temperature=1.0, epsilon=0.001, topk=500, verbose=False):
+    def generate_episodes(self, batch, min_length=0, max_length=None, temperature=1.0, epsilon=0.001, topk=500, verbose=False):
         '''
         Generate episodes over batch of sequences
 
         Args:
-          batch :List[torch.Tensor]: Contains the below elements (in order)
-            input_ids :shape (batch_size, seq_length): 
-              Input sequence for generation.
-            attention_mask :shape (batch_size, seq_length): 
-              Attention mask.
-            labels :shape (batch_size, ): 
-              Label for each sequence.
-          max_length :int: 
-            Max output sequence length
-          temperature :float: 
-            Rescale logits before softmax by  `logits = logits/temperature`. Higher temperatures t result in 
-            softer probability distribution which goes to uniform as t->infinity.
+            batch :List[torch.Tensor]:                      Contains the below elements (in order)
+            input_ids :shape (batch_size, seq_length):      Input sequence for generation.
+            attention_mask :shape (batch_size, seq_length): Attention mask.
+            labels :shape (batch_size, ):                   Label for each sequence.
+            max_length :int:                                Max output sequence length
+            temperature :float:                             Rescale logits before softmax by `logits = logits/temperature`. Higher temperatures t result in softer probability distribution. which goes to uniform as t->infinity.
         '''
         # Set epsilon for this batch
         self.epsilon = epsilon
         model_kwargs = dict()
         input_ids, attention_mask, labels = batch
-        input_ids, attention_mask, labels = input_ids.to(DEV), attention_mask.to(DEV), labels.to(DEV)
+        input_ids, attention_mask, labels = input_ids.to(self.device), attention_mask.to(self.device), labels.to(self.device)
         model_kwargs['attention_mask'] = attention_mask    
         input_ids, model_kwargs = self.prepare_inputs_for_decoder(input_ids, model_kwargs)
         max_length = max_length if max_length is not None else self.model.config.max_length      
         # For setting sequence length limit
         stopping_criteria = MaxLengthCriteria(max_length)
         # Get distribution pre_processing samplers
-        # logits_warper = LogitsProcessorList([
-        #   TemperatureLogitsWarper(temperature),
-        #   TopKLogitsWarper(topk)
-        # ])
-        logits_warper = LogitsProcessorList([TemperatureLogitsWarper(temperature)])
-
+        logits_warper = LogitsProcessorList()    
+        if temperature > 0:
+            logits_warper.append(TemperatureLogitsWarper(temperature))
+        if topk > 0:
+            logits_warper.append(TopKLogitsWarper(topk))
+        if min_length > 0:
+            logits_warper.append(MinLengthLogitsProcessor(min_length, self.eos_token_id))
         ## Generation ##
         # Keep track of which sequences are already finished
         ###
@@ -177,5 +198,4 @@ class BartReinforce():
             # stop when each sentence is finished, or if we exceed the maximum length
             if unfinished_sequences.max() == 0 or stopping_criteria(input_ids, None):
                 break
-        # print(f"Max Generation steps = {cur_len}")
         return input_ids
